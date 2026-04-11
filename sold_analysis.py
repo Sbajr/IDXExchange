@@ -1,74 +1,93 @@
 import pandas as pd
 import os
 
-# 1. Define where to search
-# Note: If you moved your files to avoid duplicates, update this path (e.g., to Downloads\Idxexchange)
+# --- SETTINGS ---
 root_path = r'C:\Users\samba\Downloads' 
+current_folder = os.path.dirname(os.path.abspath(__file__))
 
+# 1. DATA INGESTION
 sold_dfs = []
-print("--- STARTING FILE INGESTION (SOLD TRANSACTIONS) ---")
-
-# 2. Search through all folders and subfolders
+print("--- STAGE 1: INGESTION (RECURSIVE SEARCH) ---")
 for root, dirs, files in os.walk(root_path):
+    if 'raw' in root or 'crmls' in root:
+        continue
     for file in files:
-        # 3. STRICT FILTER: Only grab files matching the exact Sold naming convention
         if file.startswith('CRMLSSold') and file.endswith('.csv'):
             full_path = os.path.join(root, file)
-            
             try:
-                # low_memory=False prevents the mixed data type warning
                 temp_df = pd.read_csv(full_path, low_memory=False)
                 sold_dfs.append(temp_df)
-                
-                # VALIDATION LAYER 1: Row count for each individual file
-                print(f"Success - Loaded {file}: {len(temp_df)} rows")
+                print(f"Loaded: {full_path} | Rows: {len(temp_df)}")
             except Exception as e:
-                print(f"Error reading {file}: {e}")
+                print(f"Error loading {file}: {e}")
 
-# 4. Combine, Validate, Clean, and Export
-if sold_dfs:
-    # Merge them all together
-    df_sold = pd.concat(sold_dfs, ignore_index=True)
-    
-    # VALIDATION LAYER 2: Row count after concatenation
-    print("\n" + "="*40)
-    print("--- CONCATENATION COMPLETE ---")
-    print(f"Total rows combined (Pre-Filter): {len(df_sold)}")
-    print("="*40)
+if not sold_dfs:
+    print("No Sold files found. Exiting.")
+    exit()
 
-    # VALIDATION LAYER 3: Frequency table before filtering
-    print("\n--- PROPERTY TYPES (BEFORE FILTER) ---")
-    if 'PropertyType' in df_sold.columns:
-        print(df_sold['PropertyType'].value_counts(dropna=False))
-    else:
-        print("WARNING: 'PropertyType' column not found!")
+df_sold = pd.concat(sold_dfs, ignore_index=True)
+df_sold = df_sold.drop_duplicates()
 
-    # FILTER: Keep only 'Residential'
-    if 'PropertyType' in df_sold.columns:
-        df_sold = df_sold[df_sold['PropertyType'] == 'Residential']
+# 2. PROPERTY TYPE FILTERING
+df_sold = df_sold[df_sold['PropertyType'] == 'Residential']
 
-    # VALIDATION LAYER 4: Row count after filtering
-    print("\n" + "="*40)
-    print("--- FILTERING COMPLETE ---")
-    print(f"Total rows (Post-Residential Filter): {len(df_sold)}")
-    print("="*40)
+# 3. MISSING VALUE REPORT
+print("\n--- STAGE 3: MISSING VALUE REPORT (>90%) ---")
+null_pct = (df_sold.isnull().sum() / len(df_sold)) * 100
+high_missing = null_pct[null_pct > 90]
+print(high_missing if not high_missing.empty else "None")
 
-    # VALIDATION LAYER 5: Frequency table after filtering
-    print("\n--- PROPERTY TYPES (AFTER FILTER) ---")
-    if 'PropertyType' in df_sold.columns:
-        print(df_sold['PropertyType'].value_counts(dropna=False))
-    
-    # --- CLEANING & FEATURES ---
-    # Fix the Close Price column (remove $, commas, convert to float)
-    if 'Close Price' in df_sold.columns:
-        df_sold['Close Price'] = df_sold['Close Price'].replace(r'[\$,]', '', regex=True).astype(float)
+# 4. DYNAMIC COLUMN DETECTION (The Fix for the KeyError)
+print("\n--- STAGE 4: NUMERIC DISTRIBUTION ---")
+# Helper function to find the right column name even if it has spaces or case differences
+def find_col(possible_names):
+    for name in possible_names:
+        for col in df_sold.columns:
+            if col.strip().lower() == name.lower():
+                return col
+    return None
 
-    # Add Price per Square Foot
-    if 'LivingArea' in df_sold.columns and 'Close Price' in df_sold.columns:
-        df_sold['Price_SqFt'] = df_sold['Close Price'] / df_sold['LivingArea']
+price_col = find_col(['Close Price', 'ClosePrice', 'SoldPrice', 'Sold Price'])
+area_col = find_col(['LivingArea', 'Living Area', 'SqFt', 'SquareFootage'])
+dom_col = find_col(['Days On Market', 'DaysOnMarket', 'DOM'])
 
-    # Export to the final CSV
-    df_sold.to_csv('Master_Sold_Analysis.csv', index=False)
-    print("\n--- COMPLETE: Master_Sold_Analysis.csv is ready for Tableau! ---")
+# Cleaning detected columns
+stats_cols = []
+for col in [price_col, area_col, dom_col]:
+    if col:
+        stats_cols.append(col)
+        if df_sold[col].dtype == 'object':
+            df_sold[col] = df_sold[col].replace(r'[\$,]', '', regex=True).astype(float)
+
+if stats_cols:
+    print(df_sold[stats_cols].describe(percentiles=[.25, .5, .75, .9]))
 else:
-    print("\nNo Sold files were found in your Downloads.")
+    print("Warning: Could not find columns for pricing, area, or DOM analysis.")
+
+# 5. MORTGAGE RATE ENRICHMENT
+print("\n--- STAGE 5: FRED MORTGAGE MERGE ---")
+try:
+    url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
+    mortgage = pd.read_csv(url)
+    mortgage.columns = [col.lower() for col in mortgage.columns]
+    mortgage['date'] = pd.to_datetime(mortgage['date'])
+    mortgage.columns = ['date', 'rate_30yr_fixed']
+    
+    mortgage['year_month'] = mortgage['date'].dt.to_period('M')
+    mortgage_monthly = mortgage.groupby('year_month')['rate_30yr_fixed'].mean().reset_index()
+    
+    # Identify the date column for merging
+    sold_date_col = find_col(['CloseDate', 'Close Date', 'SoldDate', 'Sold Date'])
+    if sold_date_col:
+        df_sold['year_month'] = pd.to_datetime(df_sold[sold_date_col]).dt.to_period('M')
+        df_sold = df_sold.merge(mortgage_monthly, on='year_month', how='left')
+        print(f"Merge Complete. Validation (Null Rates): {df_sold['rate_30yr_fixed'].isnull().sum()}")
+    else:
+        print("Error: Could not find a date column for the mortgage merge.")
+except Exception as e:
+    print(f"Mortgage Merge Failed: {e}")
+
+# 6. EXPORT
+output_path = os.path.join(current_folder, 'Master_Sold_Enriched.csv')
+df_sold.to_csv(output_path, index=False)
+print(f"\n--- SUCCESS: File saved to {output_path} ---")
