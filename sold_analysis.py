@@ -37,21 +37,19 @@ null_pct = (df_sold.isnull().sum() / len(df_sold)) * 100
 high_missing = null_pct[null_pct > 90]
 print(high_missing if not high_missing.empty else "None")
 
-# 4. DYNAMIC COLUMN DETECTION (The Fix for the KeyError)
+# 4. DYNAMIC COLUMN DETECTION
 print("\n--- STAGE 4: NUMERIC DISTRIBUTION ---")
-# Helper function to find the right column name even if it has spaces or case differences
-def find_col(possible_names):
+def find_col(possible_names, df):
     for name in possible_names:
-        for col in df_sold.columns:
+        for col in df.columns:
             if col.strip().lower() == name.lower():
                 return col
     return None
 
-price_col = find_col(['Close Price', 'ClosePrice', 'SoldPrice', 'Sold Price'])
-area_col = find_col(['LivingArea', 'Living Area', 'SqFt', 'SquareFootage'])
-dom_col = find_col(['Days On Market', 'DaysOnMarket', 'DOM'])
+price_col = find_col(['Close Price', 'ClosePrice', 'SoldPrice', 'Sold Price'], df_sold)
+area_col = find_col(['LivingArea', 'Living Area', 'SqFt', 'SquareFootage'], df_sold)
+dom_col = find_col(['Days On Market', 'DaysOnMarket', 'DOM'], df_sold)
 
-# Cleaning detected columns
 stats_cols = []
 for col in [price_col, area_col, dom_col]:
     if col:
@@ -64,20 +62,23 @@ if stats_cols:
 else:
     print("Warning: Could not find columns for pricing, area, or DOM analysis.")
 
-# 5. MORTGAGE RATE ENRICHMENT
+# 5. MORTGAGE RATE ENRICHMENT (FIXED FOR FRED HEADERS)
 print("\n--- STAGE 5: FRED MORTGAGE MERGE ---")
 try:
     url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
     mortgage = pd.read_csv(url)
     mortgage.columns = [col.lower() for col in mortgage.columns]
-    mortgage['date'] = pd.to_datetime(mortgage['date'])
+    
+    # Handle the FRED date header swap
+    date_col_name = 'date' if 'date' in mortgage.columns else 'observation_date'
+    
+    mortgage[date_col_name] = pd.to_datetime(mortgage[date_col_name])
     mortgage.columns = ['date', 'rate_30yr_fixed']
     
     mortgage['year_month'] = mortgage['date'].dt.to_period('M')
     mortgage_monthly = mortgage.groupby('year_month')['rate_30yr_fixed'].mean().reset_index()
     
-    # Identify the date column for merging
-    sold_date_col = find_col(['CloseDate', 'Close Date', 'SoldDate', 'Sold Date'])
+    sold_date_col = find_col(['CloseDate', 'Close Date', 'SoldDate', 'Sold Date'], df_sold)
     if sold_date_col:
         df_sold['year_month'] = pd.to_datetime(df_sold[sold_date_col]).dt.to_period('M')
         df_sold = df_sold.merge(mortgage_monthly, on='year_month', how='left')

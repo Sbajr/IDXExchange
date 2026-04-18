@@ -11,7 +11,6 @@ print("--- STAGE 1: INGESTION (RECURSIVE SEARCH) ---")
 for root, dirs, files in os.walk(root_path):
     if 'raw' in root or 'crmls' in root:
         continue
-        
     for file in files:
         if file.startswith('CRMLSListing') and file.endswith('.csv'):
             full_path = os.path.join(root, file)
@@ -38,23 +37,37 @@ null_pct = (df_listing.isnull().sum() / len(df_listing)) * 100
 high_missing = null_pct[null_pct > 90]
 print(high_missing if not high_missing.empty else "None")
 
-# 4. MORTGAGE RATE ENRICHMENT
+# 4. MORTGAGE RATE ENRICHMENT (FIXED FOR FRED HEADERS)
 print("\n--- STAGE 4: FRED MORTGAGE MERGE ---")
 try:
     url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
     mortgage = pd.read_csv(url)
     mortgage.columns = [col.lower() for col in mortgage.columns]
-    mortgage['date'] = pd.to_datetime(mortgage['date'])
+    
+    # Handle the FRED date header swap
+    date_col_name = 'date' if 'date' in mortgage.columns else 'observation_date'
+    
+    mortgage[date_col_name] = pd.to_datetime(mortgage[date_col_name])
     mortgage.columns = ['date', 'rate_30yr_fixed']
     
     mortgage['year_month'] = mortgage['date'].dt.to_period('M')
     mortgage_monthly = mortgage.groupby('year_month')['rate_30yr_fixed'].mean().reset_index()
     
-    date_col = 'ListingContractDate' if 'ListingContractDate' in df_listing.columns else 'Listing Contract Date'
-    df_listing['year_month'] = pd.to_datetime(df_listing[date_col]).dt.to_period('M')
+    # Dynamic column finding for listings
+    def find_col_list(names, df):
+        for n in names:
+            for c in df.columns:
+                if c.strip().lower() == n.lower(): return c
+        return None
+
+    date_col = find_col_list(['ListingContractDate', 'Listing Contract Date', 'ListingDate'], df_listing)
     
-    df_listing = df_listing.merge(mortgage_monthly, on='year_month', how='left')
-    print(f"Merge Complete. Validation (Null Rates): {df_listing['rate_30yr_fixed'].isnull().sum()}")
+    if date_col:
+        df_listing['year_month'] = pd.to_datetime(df_listing[date_col]).dt.to_period('M')
+        df_listing = df_listing.merge(mortgage_monthly, on='year_month', how='left')
+        print(f"Merge Complete. Validation (Null Rates): {df_listing['rate_30yr_fixed'].isnull().sum()}")
+    else:
+        print("Error: Could not find a date column for the mortgage merge.")
 except Exception as e:
     print(f"Mortgage Merge Failed: {e}")
 
