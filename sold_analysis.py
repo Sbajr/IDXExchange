@@ -62,19 +62,15 @@ if stats_cols:
 else:
     print("Warning: Could not find columns for pricing, area, or DOM analysis.")
 
-# 5. MORTGAGE RATE ENRICHMENT (FIXED FOR FRED HEADERS)
+# 5. MORTGAGE RATE ENRICHMENT 
 print("\n--- STAGE 5: FRED MORTGAGE MERGE ---")
 try:
     url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
     mortgage = pd.read_csv(url)
     mortgage.columns = [col.lower() for col in mortgage.columns]
-    
-    # Handle the FRED date header swap
     date_col_name = 'date' if 'date' in mortgage.columns else 'observation_date'
-    
     mortgage[date_col_name] = pd.to_datetime(mortgage[date_col_name])
     mortgage.columns = ['date', 'rate_30yr_fixed']
-    
     mortgage['year_month'] = mortgage['date'].dt.to_period('M')
     mortgage_monthly = mortgage.groupby('year_month')['rate_30yr_fixed'].mean().reset_index()
     
@@ -83,12 +79,41 @@ try:
         df_sold['year_month'] = pd.to_datetime(df_sold[sold_date_col]).dt.to_period('M')
         df_sold = df_sold.merge(mortgage_monthly, on='year_month', how='left')
         print(f"Merge Complete. Validation (Null Rates): {df_sold['rate_30yr_fixed'].isnull().sum()}")
-    else:
-        print("Error: Could not find a date column for the mortgage merge.")
 except Exception as e:
     print(f"Mortgage Merge Failed: {e}")
 
-# 6. EXPORT
-output_path = os.path.join(current_folder, 'Master_Sold_Enriched.csv')
+# 6. WEEKS 4-5 DATA CLEANING & LOGIC CHECKS
+print("\n--- STAGE 6: DATA CLEANING & LOGIC CHECKS ---")
+# A. Convert Dates
+for d_col in ['CloseDate', 'PurchaseContractDate', 'ListingContractDate']:
+    actual_col = find_col([d_col, d_col.replace(' ', '')], df_sold)
+    if actual_col:
+        df_sold[actual_col] = pd.to_datetime(df_sold[actual_col], errors='coerce')
+
+# B. Physical Flags
+df_sold['invalid_phys_attr_flag'] = False
+if price_col: df_sold.loc[df_sold[price_col] <= 0, 'invalid_phys_attr_flag'] = True
+if area_col: df_sold.loc[df_sold[area_col] <= 0, 'invalid_phys_attr_flag'] = True
+if dom_col: df_sold.loc[df_sold[dom_col] < 0, 'invalid_phys_attr_flag'] = True
+
+# C. Logic Flags
+list_c = find_col(['ListingContractDate', 'Listing Contract Date'], df_sold)
+close_c = find_col(['CloseDate', 'Close Date'], df_sold)
+df_sold['negative_timeline_flag'] = False
+if list_c and close_c:
+    df_sold['negative_timeline_flag'] = df_sold[list_c] > df_sold[close_c]
+
+# D. Geo Flags
+lat_c, lon_c = find_col(['Latitude'], df_sold), find_col(['Longitude'], df_sold)
+df_sold['geo_error_flag'] = False
+if lat_c and lon_c:
+    df_sold[lat_c] = pd.to_numeric(df_sold[lat_c], errors='coerce')
+    df_sold[lon_c] = pd.to_numeric(df_sold[lon_c], errors='coerce')
+    df_sold['geo_error_flag'] = (df_sold[lon_c] > 0) | (df_sold[lat_c] == 0)
+
+print(f"Flags - Invalid Phys: {df_sold['invalid_phys_attr_flag'].sum()} | Geo: {df_sold['geo_error_flag'].sum()}")
+
+# 7. EXPORT
+output_path = os.path.join(current_folder, 'Master_Sold_Cleaned.csv')
 df_sold.to_csv(output_path, index=False)
-print(f"\n--- SUCCESS: File saved to {output_path} ---")
+print(f"--- SUCCESS: {output_path} ---")
