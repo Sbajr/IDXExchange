@@ -63,7 +63,7 @@ price_c = find_col_list(['ListPrice', 'List Price'], df_listing)
 area_c = find_col_list(['LivingArea', 'Living Area'], df_listing)
 dom_c = find_col_list(['DaysOnMarket', 'Days On Market'], df_listing)
 
-# Physical Flags (FIXED: replaced dom_col with dom_c)
+# Physical Flags
 df_listing['invalid_phys_attr_flag'] = False
 if price_c: df_listing.loc[df_listing[price_c] <= 0, 'invalid_phys_attr_flag'] = True
 if area_c: df_listing.loc[df_listing[area_c] <= 0, 'invalid_phys_attr_flag'] = True
@@ -79,7 +79,28 @@ if lat_c and lon_c:
 
 print(f"Flags - Invalid Phys: {df_listing['invalid_phys_attr_flag'].sum()} | Geo: {df_listing['geo_error_flag'].sum()}")
 
-# 6. EXPORT
-output_path = os.path.join(current_folder, 'Master_Listing_Cleaned.csv')
+# 6. WEEK 6 FEATURE ENGINEERING & METRICS
+print("\n--- STAGE 6: FEATURE ENGINEERING & METRICS ---")
+if price_c and area_c:
+    df_listing['Expected_PPSF'] = df_listing[price_c] / df_listing[area_c]
+    
+if date_col:
+    df_listing['Year'] = pd.to_datetime(df_listing[date_col]).dt.year
+    df_listing['Month'] = pd.to_datetime(df_listing[date_col]).dt.month
+    df_listing['YrMo'] = pd.to_datetime(df_listing[date_col]).dt.to_period('M').astype(str)
+
+# 7. WEEK 6 SEGMENT ANALYSIS
+prop_type_c = find_col_list(['PropertySubType', 'PropertyType'], df_listing)
+if prop_type_c and price_c:
+    print(f"\n--- STAGE 7: SEGMENT ANALYSIS BY {prop_type_c} ---")
+    summary_cols = {price_c: 'median'}
+    if 'Expected_PPSF' in df_listing.columns: summary_cols['Expected_PPSF'] = 'mean'
+    if dom_c: summary_cols[dom_c] = 'median'
+    
+    type_summary = df_listing.groupby(prop_type_c).agg(summary_cols).reset_index()
+    print(type_summary.head())
+
+# 8. EXPORT
+output_path = os.path.join(current_folder, 'Master_Listing_Engineered.csv')
 df_listing.to_csv(output_path, index=False)
-print(f"--- SUCCESS: {output_path} ---")
+print(f"\n--- SUCCESS: {output_path} ---")

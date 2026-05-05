@@ -84,26 +84,22 @@ except Exception as e:
 
 # 6. WEEKS 4-5 DATA CLEANING & LOGIC CHECKS
 print("\n--- STAGE 6: DATA CLEANING & LOGIC CHECKS ---")
-# A. Convert Dates
 for d_col in ['CloseDate', 'PurchaseContractDate', 'ListingContractDate']:
     actual_col = find_col([d_col, d_col.replace(' ', '')], df_sold)
     if actual_col:
         df_sold[actual_col] = pd.to_datetime(df_sold[actual_col], errors='coerce')
 
-# B. Physical Flags
 df_sold['invalid_phys_attr_flag'] = False
 if price_col: df_sold.loc[df_sold[price_col] <= 0, 'invalid_phys_attr_flag'] = True
 if area_col: df_sold.loc[df_sold[area_col] <= 0, 'invalid_phys_attr_flag'] = True
 if dom_col: df_sold.loc[df_sold[dom_col] < 0, 'invalid_phys_attr_flag'] = True
 
-# C. Logic Flags
 list_c = find_col(['ListingContractDate', 'Listing Contract Date'], df_sold)
 close_c = find_col(['CloseDate', 'Close Date'], df_sold)
 df_sold['negative_timeline_flag'] = False
 if list_c and close_c:
     df_sold['negative_timeline_flag'] = df_sold[list_c] > df_sold[close_c]
 
-# D. Geo Flags
 lat_c, lon_c = find_col(['Latitude'], df_sold), find_col(['Longitude'], df_sold)
 df_sold['geo_error_flag'] = False
 if lat_c and lon_c:
@@ -113,7 +109,43 @@ if lat_c and lon_c:
 
 print(f"Flags - Invalid Phys: {df_sold['invalid_phys_attr_flag'].sum()} | Geo: {df_sold['geo_error_flag'].sum()}")
 
-# 7. EXPORT
-output_path = os.path.join(current_folder, 'Master_Sold_Cleaned.csv')
+# 7. WEEK 6 FEATURE ENGINEERING & METRICS
+print("\n--- STAGE 7: FEATURE ENGINEERING & METRICS ---")
+orig_list_c = find_col(['OriginalListPrice', 'Original List Price'], df_sold)
+purch_c = find_col(['PurchaseContractDate', 'Purchase Contract Date'], df_sold)
+
+if orig_list_c:
+    if df_sold[orig_list_c].dtype == 'object':
+        df_sold[orig_list_c] = pd.to_numeric(df_sold[orig_list_c].replace(r'[\$,]', '', regex=True), errors='coerce')
+
+if price_col and orig_list_c:
+    df_sold['Close_to_Original_Ratio'] = df_sold[price_col] / df_sold[orig_list_c]
+if price_col and area_col:
+    df_sold['Price_Per_SqFt'] = df_sold[price_col] / df_sold[area_col]
+
+if purch_c and list_c:
+    df_sold['Listing_to_Contract_Days'] = (df_sold[purch_c] - df_sold[list_c]).dt.days
+if close_c and purch_c:
+    df_sold['Contract_to_Close_Days'] = (df_sold[close_c] - df_sold[purch_c]).dt.days
+
+if close_c:
+    df_sold['Year'] = df_sold[close_c].dt.year
+    df_sold['Month'] = df_sold[close_c].dt.month
+    df_sold['YrMo'] = df_sold[close_c].dt.to_period('M').astype(str)
+
+# 8. WEEK 6 SEGMENT ANALYSIS
+county_c = find_col(['CountyOrParish', 'County'], df_sold)
+if county_c and price_col:
+    print(f"\n--- STAGE 8: SEGMENT ANALYSIS BY {county_c} ---")
+    summary_cols = {price_col: 'median'}
+    if 'Price_Per_SqFt' in df_sold.columns: summary_cols['Price_Per_SqFt'] = 'mean'
+    if 'Close_to_Original_Ratio' in df_sold.columns: summary_cols['Close_to_Original_Ratio'] = 'mean'
+    if dom_col: summary_cols[dom_col] = 'median'
+    
+    segment_summary = df_sold.groupby(county_c).agg(summary_cols).reset_index()
+    print(segment_summary.head())
+
+# 9. EXPORT
+output_path = os.path.join(current_folder, 'Master_Sold_Engineered.csv')
 df_sold.to_csv(output_path, index=False)
-print(f"--- SUCCESS: {output_path} ---")
+print(f"\n--- SUCCESS: {output_path} ---")
