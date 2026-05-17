@@ -145,7 +145,36 @@ if county_c and price_col:
     segment_summary = df_sold.groupby(county_c).agg(summary_cols).reset_index()
     print(segment_summary.head())
 
-# 9. EXPORT
-output_path = os.path.join(current_folder, 'Master_Sold_Engineered.csv')
-df_sold.to_csv(output_path, index=False)
-print(f"\n--- SUCCESS: {output_path} ---")
+# 9. WEEK 7 OUTLIER DETECTION (IQR METHOD)
+print("\n--- STAGE 9: OUTLIER DETECTION (IQR) ---")
+df_sold['is_outlier'] = False
+initial_rows = len(df_sold)
+median_before = df_sold[price_col].median() if price_col else None
+
+for col in [price_col, area_col, dom_col]:
+    if col and col in df_sold.columns:
+        Q1 = df_sold[col].quantile(0.25)
+        Q3 = df_sold[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        
+        # Flag if outside bounds (ignore NaN)
+        outlier_mask = (df_sold[col].notna()) & ((df_sold[col] < lower_bound) | (df_sold[col] > upper_bound))
+        df_sold.loc[outlier_mask, 'is_outlier'] = True
+
+df_sold_clean = df_sold[~df_sold['is_outlier']].copy()
+final_rows = len(df_sold_clean)
+median_after = df_sold_clean[price_col].median() if price_col else None
+
+print(f"Original Rows: {initial_rows} | Filtered Rows: {final_rows} | Outliers Removed: {initial_rows - final_rows}")
+print(f"Median {price_col} Before: {median_before} | After: {median_after}")
+
+# 10. EXPORT
+output_flagged = os.path.join(current_folder, 'Master_Sold_Flagged.csv')
+output_filtered = os.path.join(current_folder, 'Master_Sold_Filtered.csv')
+
+df_sold.to_csv(output_flagged, index=False)
+df_sold_clean.to_csv(output_filtered, index=False)
+print(f"\n--- SUCCESS: Saved Flagged Dataset to {output_flagged} ---")
+print(f"--- SUCCESS: Saved Clean Filtered Dataset to {output_filtered} ---")
